@@ -12,6 +12,7 @@ export interface Entry {
     endTime: string;
     subEntries?: Entry[];
     collapsed?: boolean;
+    efficiency?: string;
 }
 
 export async function saveTracker(tracker: Tracker, fileName: string, section: MarkdownSectionInformation): Promise<void> {
@@ -116,6 +117,7 @@ export function displayTracker(tracker: Tracker, element: HTMLElement, getFile: 
             createEl("th", { text: "Start time" }),
             createEl("th", { text: "End time" }),
             createEl("th", { text: "Duration" }),
+            createEl("th", { text: "时间利用效率" }),
             createEl("th"));
 
         for (let entry of orderedEntries(tracker.entries, settings))
@@ -207,21 +209,21 @@ export function getRunningEntry(entries: Entry[]): Entry {
 }
 
 export function createMarkdownTable(tracker: Tracker, settings: SimpleTimeTrackerSettings): string {
-    let table = [["Segment", "Start time", "End time", "Duration"]];
+    let table = [["Segment", "Start time", "End time", "Duration", "时间利用效率"]];
     for (let entry of orderedEntries(tracker.entries, settings))
         table.push(...createTableSection(entry, settings));
     table.push(["**Total**", "", "", `**${formatDuration(getTotalDuration(tracker.entries), settings)}**`]);
 
     let ret = "";
     // calculate the width every column needs to look neat when monospaced
-    let widths = Array.from(Array(4).keys()).map(i => Math.max(...table.map(a => a[i].length)));
+    let widths = Array.from(Array(5).keys()).map(i => Math.max(...table.map(a => a[i].length)));
     for (let r = 0; r < table.length; r++) {
         // add separators after first row
         if (r == 1)
-            ret += "| " + Array.from(Array(4).keys()).map(i => "-".repeat(widths[i])).join(" | ") + " |\n";
+            ret += "| " + Array.from(Array(5).keys()).map(i => "-".repeat(widths[i])).join(" | ") + " |\n";
 
         let row: string[] = [];
-        for (let i = 0; i < 4; i++)
+        for (let i = 0; i < 5; i++)
             row.push(table[r][i].padEnd(widths[i], " "));
         ret += "| " + row.join(" | ") + " |\n";
     }
@@ -277,7 +279,59 @@ export function formatDuration(totalTime: number, settings: SimpleTimeTrackerSet
 }
 
 
+function getOverallEfficiency(entry: Entry): string {
+    if (!entry.subEntries || entry.subEntries.length === 0) {
+        return entry.efficiency || "";
+    }
+
+    // Calculate weighted average efficiency based on duration
+    let totalWeightedScore = 0;
+    let totalDuration = 0;
+
+    for (const sub of entry.subEntries) {
+        const duration = getDuration(sub);
+        const score = getEfficiencyValue(sub.efficiency || "");
+        if (score > 0 && duration > 0) {
+            totalWeightedScore += duration * score;
+            totalDuration += duration;
+        }
+    }
+
+    if (totalDuration === 0) return "";
+
+    const finalScore = totalWeightedScore / totalDuration;
+    return getEfficiencyFromValue(finalScore);
+}
+
+function getEfficiencyValue(efficiency: string): number {
+    switch (efficiency) {
+        case "高效": return 100;
+        case "良好": return 80;
+        case "一般": return 60;
+        case "低效": return 10;
+        default: return 0;
+    }
+}
+
+function getEfficiencyFromValue(value: number): string {
+    if (value >= 90) return "高效";
+    if (value >= 75) return "良好";
+    if (value >= 55) return "一般";
+    return "低效";
+}
+
+function getDepth(entry: Entry): number {
+    // Calculate the depth of the entry in the hierarchy
+    // This is a recursive function to find the maximum depth
+    if (!entry.subEntries || entry.subEntries.length === 0) {
+        return 0;
+    }
+    return 1 + Math.max(...entry.subEntries.map(sub => getDepth(sub)));
+}
+
 function startSubEntry(entry: Entry, name: string): void {
+    // No depth check needed since UI prevents sub-entries from calling this
+
     // if this entry is not split yet, we add its time as a sub-entry instead
     if (!entry.subEntries) {
         entry.subEntries = [{ ...entry, name: `Part 1` }];
@@ -378,7 +432,8 @@ function createTableSection(entry: Entry, settings: SimpleTimeTrackerSettings, i
         `${prefix}${entry.name}`, // Add prefix based on the indent level.
         entry.startTime ? formatTimestamp(entry.startTime, settings) : "",
         entry.endTime ? formatTimestamp(entry.endTime, settings) : "",
-        entry.endTime || entry.subEntries ? formatDuration(getDuration(entry), settings) : ""
+        entry.endTime || entry.subEntries ? formatDuration(getDuration(entry), settings) : "",
+        getOverallEfficiency(entry)
     ]];
 
     // If sub-entries exist, add them recursively.
@@ -400,6 +455,17 @@ function addEditableTableRow(tracker: Tracker, entry: Entry, table: HTMLTableEle
 
     row.createEl("td", { text: entry.endTime || entry.subEntries ? formatDuration(getDuration(entry), settings) : "" });
 
+    let efficiencyField = new EditableSelectField(row, getOverallEfficiency(entry), !!entry.subEntries);
+
+    // Apply initial color
+    const overallEff = getOverallEfficiency(entry);
+    if (overallEff) {
+        if (overallEff === "高效") efficiencyField.cell.addClass("efficiency-high");
+        else if (overallEff === "良好") efficiencyField.cell.addClass("efficiency-good");
+        else if (overallEff === "一般") efficiencyField.cell.addClass("efficiency-average");
+        else if (overallEff === "低效") efficiencyField.cell.addClass("efficiency-low");
+    }
+
     renderNameAsMarkdown(nameField.label, getFile, component);
 
     let expandButton = new ButtonComponent(nameField.label)
@@ -419,15 +485,17 @@ function addEditableTableRow(tracker: Tracker, entry: Entry, table: HTMLTableEle
 
     let entryButtons = row.createEl("td");
     entryButtons.addClass("simple-time-tracker-table-buttons");
-    new ButtonComponent(entryButtons)
-        .setClass("clickable-icon")
-        .setIcon(`lucide-play`)
-        .setTooltip("Continue")
-        .setDisabled(trackerRunning)
-        .onClick(async () => {
-            startSubEntry(entry, newSegmentNameBox.getValue());
-            await saveTracker(tracker, getFile(), getSectionInfo());
-        });
+    if (indent < 1) { // Only show Continue button for top-level entries
+        new ButtonComponent(entryButtons)
+            .setClass("clickable-icon")
+            .setIcon(`lucide-play`)
+            .setTooltip("Continue")
+            .setDisabled(trackerRunning)
+            .onClick(async () => {
+                startSubEntry(entry, newSegmentNameBox.getValue());
+                await saveTracker(tracker, getFile(), getSectionInfo());
+            });
+    }
     let editButton = new ButtonComponent(entryButtons)
         .setClass("clickable-icon")
         .setTooltip("Edit")
@@ -460,6 +528,10 @@ function addEditableTableRow(tracker: Tracker, entry: Entry, table: HTMLTableEle
             endField.endEdit();
             entry.endTime = endField.getTimestamp();
         }
+        efficiencyField.endEdit();
+        if (!efficiencyField.isDisabled) {
+            entry.efficiency = efficiencyField.getValue();
+        }
         await saveTracker(tracker, getFile(), getSectionInfo());
         editButton.setIcon("lucide-pencil");
         renderNameAsMarkdown(nameField.label, getFile, component);
@@ -474,19 +546,21 @@ function addEditableTableRow(tracker: Tracker, entry: Entry, table: HTMLTableEle
             if (!entryRunning)
                 endField.beginEdit(entry.endTime);
         }
+        efficiencyField.beginEdit(entry.efficiency || "");
         editButton.setIcon("lucide-check");
 
         // Set up save/cancel handlers for keyboard shortcuts
-        nameField.onSave = startField.onSave = endField.onSave = async () => {
+        nameField.onSave = startField.onSave = endField.onSave = efficiencyField.onSave = async () => {
             await saveChanges();
         };
 
-        nameField.onCancel = startField.onCancel = endField.onCancel = () => {
+        nameField.onCancel = startField.onCancel = endField.onCancel = efficiencyField.onCancel = () => {
             nameField.endEdit();
             startField.endEdit();
             if (!entryRunning) {
                 endField.endEdit();
             }
+            efficiencyField.endEdit();
             expandButton.buttonEl.style.display = null;
             editButton.setIcon("lucide-pencil");
         };
@@ -610,5 +684,62 @@ class EditableTimestampField extends EditableField {
         } else {
             return null;
         }
+    }
+}
+
+class EditableSelectField extends EditableField {
+    select: HTMLSelectElement;
+    isDisabled: boolean;
+
+    constructor(row: HTMLTableRowElement, value: string, disabled = false) {
+        super(row, 0, value);
+        this.isDisabled = disabled;
+        this.select = this.cell.createEl("select");
+        this.select.addClass("simple-time-tracker-input");
+        this.select.style.display = "none";
+        this.select.disabled = disabled;
+        this.select.addEventListener("keydown", (e: KeyboardEvent) => {
+            if (e.key === "Enter") {
+                e.preventDefault();
+                this.onSave?.();
+            }
+            if (e.key === "Escape") {
+                e.preventDefault();
+                this.onCancel?.();
+            }
+        });
+
+        // Add options
+        const options = ["", "高效", "良好", "一般", "低效"];
+        options.forEach(opt => {
+            const option = this.select.createEl("option", { value: opt, text: opt });
+            if (opt === value) option.selected = true;
+        });
+    }
+
+    beginEdit(value: string, focus = false): void {
+        if (this.isDisabled) return;
+        this.label.hidden = true;
+        this.select.value = value;
+        this.select.style.display = "";
+        if (focus) this.select.focus();
+    }
+
+    endEdit(): string {
+        const value = this.select.value;
+        this.label.setText(value);
+        this.select.style.display = "none";
+        this.label.hidden = false;
+        // Add color class based on value
+        this.cell.className = ""; // Reset classes
+        if (value === "高效") this.cell.addClass("efficiency-high");
+        else if (value === "良好") this.cell.addClass("efficiency-good");
+        else if (value === "一般") this.cell.addClass("efficiency-average");
+        else if (value === "低效") this.cell.addClass("efficiency-low");
+        return value;
+    }
+
+    getValue(): string {
+        return this.select.value;
     }
 }

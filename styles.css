@@ -84,3 +84,24 @@
 .simple-time-tracker-table tr:hover {
     background-color: var(--background-modifier-hover);
 }
+
+/* Efficiency colors */
+.efficiency-high {
+    background-color: #4CAF50 !important; /* Deep green */
+    color: white;
+}
+
+.efficiency-good {
+    background-color: #8BC34A !important; /* Light green */
+    color: black;
+}
+
+.efficiency-average {
+    background-color: #FFEB3B !important; /* Yellow */
+    color: black;
+}
+
+.efficiency-low {
+    background-color: #F44336 !important; /* Red */
+    color: white;
+}
